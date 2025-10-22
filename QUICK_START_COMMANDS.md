@@ -23,10 +23,10 @@ docker images | grep wan-trt
 docker login
 
 # Tag (replace YOUR_USERNAME with your Docker Hub username)
-docker tag wan-trt:v1.0 YOUR_USERNAME/wan-trt:v1.0
+docker tag wan-trt:v1.0 richdaleai/wan-trt:v1.0
 
 # Push (takes 10-20 minutes)
-docker push YOUR_USERNAME/wan-trt:v1.0
+docker push richdaleai/wan-trt:v1.0
 ```
 
 **Alternative: Save as file**
