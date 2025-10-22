@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  wan-trt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wan-trt:latest
+    container_name: wan-trt
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      # Mount project directory
+      - .:/workspace/wan_trt
+      # Mount HuggingFace cache (optional, for faster model loading)
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      # Mount outputs (persistent storage)
+      - ./outputs:/workspace/wan_trt/outputs
+    shm_size: '16gb'
+    stdin_open: true
+    tty: true
+    working_dir: /workspace/wan_trt
+

@@ -1,0 +1,38 @@
+# Docker ignore file
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+
+# Outputs (will be mounted as volume)
+outputs/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# Tests
+tests/
+
+# Temporary files
+*.log
+*.tmp
+tmp/
+

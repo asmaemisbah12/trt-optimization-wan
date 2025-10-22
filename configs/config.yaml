@@ -1,0 +1,156 @@
+# Wan2.2-T2V TensorRT Configuration
+
+# Model settings
+model:
+  id: "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+  cache_dir: null  # Uses HF default cache
+  variant: null
+  torch_dtype: "bfloat16"  # Wan2.2 uses bfloat16 (14B MoE architecture)
+  vae_dtype: "float32"     # AutoencoderKLWan precision for stability
+  
+  # Wan2.2 Architecture Details
+  # - Total parameters: 27B (MoE with 2 experts)
+  # - Active parameters: 14B per inference step
+  # - VAE compression: 16×16×4 (spatial×spatial×temporal)
+  # - Latent channels: 16 (not 4 like standard VAE)
+  # - Max frames: 81 @ 24fps
+  # - Resolutions: 480P, 720P (native), up to 1280P
+
+# ONNX Export settings
+export:
+  output_dir: "outputs/onnx"
+  opset_version: 17
+  do_constant_folding: true
+  
+  # Component-specific settings
+  transformer:  # Wan uses "transformer" not "dit"
+    precision: "bf16"  # bfloat16 for Wan2.2
+    dynamic_axes:
+      sample: [0, 2, 3, 4]  # [batch, channels=16, frames, height, width]
+      timestep: []
+      encoder_hidden_states: [0, 1]  # [batch, seq_len]
+    notes: "MoE architecture with 2 experts (high-noise and low-noise)"
+    
+  vae:
+    precision: "fp32"
+    dynamic_axes:
+      latent_sample: [0, 2, 3, 4]  # [batch, channels=16, frames, height, width]
+    notes: "AutoencoderKLWan with 16×16×4 compression ratio"
+
+# TensorRT Engine settings
+tensorrt:
+  output_dir: "outputs/engines"
+  workspace_size: 8192  # MB
+  strict_types: true
+  enable_tactic_heuristic: true
+  
+  # Optimization profiles (adjusted for Wan2.2 16×16 spatial, 4× temporal compression)
+  profiles:
+    transformer_bf16:
+      # Frames (latent space - 4× temporal compression)
+      frames:
+        min: 2     # 8 video frames / 4
+        opt: 20    # 81 video frames / 4
+        max: 20    # 81 video frames / 4
+      # Height (latent space - 16× spatial compression)
+      height:
+        min: 30    # 480px / 16
+        opt: 45    # 720px / 16
+        max: 80    # 1280px / 16
+      # Width (latent space - 16× spatial compression)
+      width:
+        min: 30    # 480px / 16
+        opt: 80    # 1280px / 16
+        max: 80    # 1280px / 16
+      batch_size:
+        min: 1
+        opt: 1
+        max: 1
+      # Note: Latent channels are 16 (fixed)
+    
+    vae_fp32:
+      # Frames (latent space - 4× temporal compression)
+      frames:
+        min: 2     # 8 video frames / 4
+        opt: 20    # 81 video frames / 4
+        max: 20    # 81 video frames / 4
+      # Height (latent space - 16× spatial compression)
+      height:
+        min: 30    # 480px / 16
+        opt: 45    # 720px / 16
+        max: 80    # 1280px / 16
+      # Width (latent space - 16× spatial compression)
+      width:
+        min: 30    # 480px / 16
+        opt: 80    # 1280px / 16
+        max: 80    # 1280px / 16
+      batch_size:
+        min: 1
+        opt: 1
+        max: 1
+      # Note: AutoencoderKLWan uses 16 channels
+
+# Runtime settings
+runtime:
+  device: "cuda:0"
+  enable_cuda_graph: true
+  cuda_graph_warmup_runs: 3
+  persistent_buffers: true
+  async_execution: true
+  memory_pool_size: 4096  # MB pre-allocated
+
+# Inference settings (Wan2.2 specific)
+inference:
+  num_inference_steps: 40      # Wan2.2 default
+  guidance_scale: 4.0           # Wan2.2 primary guidance
+  guidance_scale_2: 3.0         # Wan2.2 secondary guidance
+  num_frames: 81                # Max 81 frames @ 24fps = 3.4s
+  height: 720                   # 720P recommended
+  width: 1280                   # 720P aspect ratio
+  fps: 24                       # Wan2.2 native fps (24, not 16)
+  seed: null                    # null for random
+  negative_prompt: ""           # Optional negative prompt
+
+# Benchmark settings
+benchmark:
+  output_dir: "outputs/benchmarks"
+  num_warmup_runs: 3
+  num_test_runs: 10
+  
+  prompts:
+    - "A serene lake at sunset with mountains in the background"
+    - "A busy city street with cars and people"
+    - "Ocean waves crashing on a beach"
+  
+  test_configurations:
+    - name: "short_720p"
+      frames: 16
+      height: 720
+      width: 1280
+    - name: "medium_720p"
+      frames: 32
+      height: 720
+      width: 1280
+    - name: "long_720p"
+      frames: 81
+      height: 720
+      width: 1280
+  
+  # Quality metrics
+  metrics:
+    psnr: true
+    ssim: true
+    lpips: true
+    visual_inspection: true
+  
+  # Baseline comparison
+  baselines:
+    - pytorch_fp16
+    - pytorch_mixed  # FP16 DiT + FP32 VAE
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  output_dir: "outputs/logs"
+  tensorboard: false
+
