@@ -15,6 +15,8 @@ docker build -t wan-trt:v1.0 .
 
 # Verify
 docker images | grep wan-trt
+docker images | Select-String wan-trt #powershell
+docker images | findstr wan-trt #windows
 ```
 
 ### 2. Push to Docker Hub
@@ -46,7 +48,7 @@ docker save wan-trt:v1.0 | gzip > wan-trt-v1.0.tar.gz
 docker login
 
 # Pull (replace YOUR_USERNAME)
-docker pull YOUR_USERNAME/wan-trt:v1.0
+docker pull richdaleai/wan-trt:v1.0
 ```
 
 ### 4. Start Container
