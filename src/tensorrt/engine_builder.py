@@ -435,15 +435,16 @@ def load_engine(engine_path: str) -> trt.ICudaEngine:
     
     logger.info("Engine loaded successfully")
     
-    # Log engine info
-    logger.info(f"  Num bindings: {engine.num_bindings}")
+    # Log engine info (TensorRT 10.x API)
+    logger.info(f"  Num I/O tensors: {engine.num_io_tensors}")
     logger.info(f"  Num optimization profiles: {engine.num_optimization_profiles}")
     
-    for i in range(engine.num_bindings):
-        binding_name = engine.get_binding_name(i)
-        binding_shape = engine.get_binding_shape(i)
-        is_input = engine.binding_is_input(i)
-        logger.info(f"  Binding {i}: {binding_name} - {'input' if is_input else 'output'} - {binding_shape}")
+    for i in range(engine.num_io_tensors):
+        tensor_name = engine.get_tensor_name(i)
+        tensor_shape = engine.get_tensor_shape(tensor_name)
+        tensor_mode = engine.get_tensor_mode(tensor_name)
+        tensor_dtype = engine.get_tensor_dtype(tensor_name)
+        logger.info(f"  Tensor {i}: {tensor_name} - {tensor_mode} - {tensor_shape} - {tensor_dtype}")
     
     return engine
 

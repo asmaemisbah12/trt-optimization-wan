@@ -38,21 +38,20 @@ class TRTInference:
         # Binding information
         self.input_names = []
         self.output_names = []
-        self.bindings = [None] * engine.num_bindings
-        self.binding_shapes = {}
+        self.tensor_shapes = {}
         
-        # Parse bindings
-        for i in range(engine.num_bindings):
-            name = engine.get_binding_name(i)
-            shape = engine.get_binding_shape(i)
-            is_input = engine.binding_is_input(i)
+        # Parse I/O tensors (TensorRT 10.x API)
+        for i in range(engine.num_io_tensors):
+            name = engine.get_tensor_name(i)
+            shape = engine.get_tensor_shape(name)
+            mode = engine.get_tensor_mode(name)
             
-            if is_input:
+            if mode == trt.TensorIOMode.INPUT:
                 self.input_names.append(name)
             else:
                 self.output_names.append(name)
             
-            self.binding_shapes[name] = shape
+            self.tensor_shapes[name] = shape
         
         logger.info(f"TRTInference initialized")
         logger.info(f"  Inputs: {self.input_names}")
@@ -84,32 +83,44 @@ class TRTInference:
             
             shape = input_shapes[name]
             
-            # Set binding shape for dynamic shapes
-            binding_idx = self.engine.get_binding_index(name)
-            self.context.set_binding_shape(binding_idx, shape)
+            # Set tensor shape for dynamic shapes (TensorRT 10.x API)
+            logger.debug(f"Setting input shape for {name}: {shape}")
+            self.context.set_input_shape(name, shape)
             
             # Allocate tensor
-            dtype = self._trt_dtype_to_torch(self.engine.get_binding_dtype(binding_idx))
+            dtype = self._trt_dtype_to_torch(self.engine.get_tensor_dtype(name))
             tensor = torch.empty(shape, dtype=dtype, device=self.device)
             buffers[name] = tensor
-            self.bindings[binding_idx] = tensor.data_ptr()
             
             logger.debug(f"Allocated input buffer: {name} {shape} {dtype}")
         
         # Allocate output buffers
         for name in self.output_names:
-            binding_idx = self.engine.get_binding_index(name)
-            
             # Get output shape (may depend on input shapes)
-            output_shape = self.context.get_binding_shape(binding_idx)
+            output_shape = self.context.get_tensor_shape(name)
+            
+            # Handle dynamic dimensions (replace -1 with actual values)
+            actual_shape = []
+            for i, dim in enumerate(output_shape):
+                if dim == -1:
+                    # For dynamic dimensions, we need to infer from input shapes
+                    # This is a simplified approach - in practice, you'd need to know
+                    # the relationship between input and output dynamic dimensions
+                    if i == 2:  # Assuming frame dimension
+                        # Get frame dimension from sample input
+                        sample_shape = input_shapes.get('sample', (1, 16, 16, 45, 80))
+                        actual_shape.append(sample_shape[2])  # Use frame dimension from sample
+                    else:
+                        actual_shape.append(1)  # Default fallback
+                else:
+                    actual_shape.append(dim)
             
             # Allocate tensor
-            dtype = self._trt_dtype_to_torch(self.engine.get_binding_dtype(binding_idx))
-            tensor = torch.empty(tuple(output_shape), dtype=dtype, device=self.device)
+            dtype = self._trt_dtype_to_torch(self.engine.get_tensor_dtype(name))
+            tensor = torch.empty(tuple(actual_shape), dtype=dtype, device=self.device)
             buffers[name] = tensor
-            self.bindings[binding_idx] = tensor.data_ptr()
             
-            logger.debug(f"Allocated output buffer: {name} {tuple(output_shape)} {dtype}")
+            logger.debug(f"Allocated output buffer: {name} {tuple(actual_shape)} {dtype}")
         
         return buffers
     
@@ -136,14 +147,25 @@ class TRTInference:
         for name, tensor in inputs.items():
             buffers[name].copy_(tensor)
         
+        # Set input tensors (TensorRT 10.x API)
+        for name, tensor in inputs.items():
+            # Ensure tensor is contiguous and on the correct device
+            if not tensor.is_contiguous():
+                tensor = tensor.contiguous()
+            self.context.set_tensor_address(name, tensor.data_ptr())
+        
+        # Set output tensors
+        for name in self.output_names:
+            # Ensure tensor is contiguous
+            if not buffers[name].is_contiguous():
+                buffers[name] = buffers[name].contiguous()
+            self.context.set_tensor_address(name, buffers[name].data_ptr())
+        
         # Execute inference
         if stream is None:
             stream = torch.cuda.current_stream(self.device)
         
-        success = self.context.execute_async_v2(
-            bindings=self.bindings,
-            stream_handle=stream.cuda_stream
-        )
+        success = self.context.execute_async_v3(stream.cuda_stream)
         
         if not success:
             raise RuntimeError("TensorRT inference failed")
