@@ -1,0 +1,10 @@
+Defaulting to user installation because normal site-packages is not writeable
+Looking in indexes: https://mcache-dsm.massedcompute.com/simple
+Requirement already satisfied: onnxscript in /home/ubuntu/.local/lib/python3.10/site-packages (0.5.4)
+Requirement already satisfied: onnx>=1.16 in /home/ubuntu/.local/lib/python3.10/site-packages (from onnxscript) (1.19.1)
+Requirement already satisfied: numpy in /home/ubuntu/.local/lib/python3.10/site-packages (from onnxscript) (2.2.6)
+Requirement already satisfied: packaging in /home/ubuntu/.local/lib/python3.10/site-packages (from onnxscript) (25.0)
+Requirement already satisfied: onnx_ir<2,>=0.1.10 in /home/ubuntu/.local/lib/python3.10/site-packages (from onnxscript) (0.1.11)
+Requirement already satisfied: typing_extensions>=4.10 in /home/ubuntu/.local/lib/python3.10/site-packages (from onnxscript) (4.15.0)
+Requirement already satisfied: ml_dtypes in /home/ubuntu/.local/lib/python3.10/site-packages (from onnxscript) (0.5.3)
+Requirement already satisfied: protobuf>=4.25.1 in /home/ubuntu/.local/lib/python3.10/site-packages (from onnx>=1.16->onnxscript) (6.33.0)

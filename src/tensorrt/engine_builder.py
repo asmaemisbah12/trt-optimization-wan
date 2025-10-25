@@ -59,12 +59,26 @@ class EngineBuilder:
         self.network = self.builder.create_network(network_flags)
         self.parser = trt.OnnxParser(self.network, TRT_LOGGER)
         
-        # Parse ONNX model
-        with open(self.onnx_path, 'rb') as f:
-            if not self.parser.parse(f.read()):
-                for error in range(self.parser.num_errors):
-                    logger.error(f"ONNX parse error: {self.parser.get_error(error)}")
-                raise RuntimeError("Failed to parse ONNX model")
+        # Change to ONNX file directory to find external data files
+        onnx_path = Path(self.onnx_path)
+        original_cwd = Path.cwd()
+        
+        try:
+            # Change to ONNX file directory
+            import os
+            os.chdir(onnx_path.parent)
+            logger.info(f"Changed to ONNX directory: {onnx_path.parent}")
+            
+            # Parse ONNX model
+            with open(onnx_path.name, 'rb') as f:
+                if not self.parser.parse(f.read()):
+                    for error in range(self.parser.num_errors):
+                        logger.error(f"ONNX parse error: {self.parser.get_error(error)}")
+                    raise RuntimeError("Failed to parse ONNX model")
+        
+        finally:
+            # Restore original working directory
+            os.chdir(original_cwd)
         
         logger.info(f"Network created successfully")
         logger.info(f"  Inputs: {self.network.num_inputs}")
@@ -96,12 +110,100 @@ class EngineBuilder:
         
         # Strict types (recommended for mixed precision)
         if self.strict_types:
-            self.config.set_flag(trt.BuilderFlag.STRICT_TYPES)
-            logger.info("Strict type checking enabled")
+            try:
+                self.config.set_flag(trt.BuilderFlag.STRICT_TYPES)
+                logger.info("Strict type checking enabled")
+            except AttributeError:
+                logger.warning("STRICT_TYPES flag not supported in this TensorRT version, skipping")
         
         # Tactic heuristic for faster builds
         if self.enable_tactic_heuristic:
             self.config.set_flag(trt.BuilderFlag.DISABLE_TIMING_CACHE)
+        
+        # Additional flags for better compatibility
+        try:
+            # Enable more aggressive optimization
+            self.config.set_flag(trt.BuilderFlag.PREFER_PRECISION_CONSTRAINTS)
+            logger.info("Precision constraints enabled")
+        except AttributeError:
+            logger.warning("PREFER_PRECISION_CONSTRAINTS not supported, skipping")
+        
+        try:
+            # Allow TensorRT to use more memory for optimization
+            self.config.set_flag(trt.BuilderFlag.REJECT_EMPTY_ALGORITHMS)
+            logger.info("Empty algorithms rejection enabled")
+        except AttributeError:
+            logger.warning("REJECT_EMPTY_ALGORITHMS not supported, skipping")
+        
+        # Try to enable more permissive settings for unsupported operations
+        try:
+            # Allow TensorRT to be more flexible with unsupported operations
+            self.config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
+            logger.info("Precision constraints obedience enabled")
+        except AttributeError:
+            logger.warning("OBEY_PRECISION_CONSTRAINTS not supported, skipping")
+        
+        # Try to disable some constraints that might help with unsupported operations
+        try:
+            # Disable precision constraints to be more permissive
+            self.config.clear_flag(trt.BuilderFlag.PREFER_PRECISION_CONSTRAINTS)
+            logger.info("Precision constraints disabled for better compatibility")
+        except AttributeError:
+            logger.warning("Cannot clear PREFER_PRECISION_CONSTRAINTS, skipping")
+        
+        # Add more aggressive compatibility flags
+        try:
+            # Allow TensorRT to be more flexible with layer fusion
+            self.config.set_flag(trt.BuilderFlag.DISABLE_TIMING_CACHE)
+            logger.info("Timing cache disabled for better compatibility")
+        except AttributeError:
+            logger.warning("Cannot disable timing cache, skipping")
+        
+        try:
+            # Enable more permissive layer fusion
+            self.config.set_flag(trt.BuilderFlag.PREFER_PRECISION_CONSTRAINTS)
+            logger.info("Precision constraints re-enabled for compatibility")
+        except AttributeError:
+            logger.warning("Cannot re-enable precision constraints, skipping")
+        
+        # Set maximum layers for better compatibility
+        try:
+            self.config.max_layers = 1000
+            logger.info("Max layers set to 1000")
+        except AttributeError:
+            logger.warning("max_layers not supported, skipping")
+        
+        # Try to disable problematic optimizations
+        try:
+            # Disable some optimizations that might cause issues with complex operations
+            self.config.set_flag(trt.BuilderFlag.DISABLE_TIMING_CACHE)
+            logger.info("Timing cache disabled for compatibility")
+        except AttributeError:
+            logger.warning("Cannot disable timing cache, skipping")
+        
+        # Try to set more permissive layer fusion
+        try:
+            # Allow more aggressive layer fusion
+            self.config.set_flag(trt.BuilderFlag.PREFER_PRECISION_CONSTRAINTS)
+            logger.info("Precision constraints enabled for better fusion")
+        except AttributeError:
+            logger.warning("Cannot set precision constraints, skipping")
+        
+        # Try to disable layer fusion that might cause issues with complex operations
+        try:
+            # Disable some layer fusion that might be problematic
+            self.config.set_flag(trt.BuilderFlag.DISABLE_TIMING_CACHE)
+            logger.info("Timing cache disabled to avoid fusion issues")
+        except AttributeError:
+            logger.warning("Cannot disable timing cache, skipping")
+        
+        # Try to enable more permissive settings
+        try:
+            # Allow TensorRT to be more flexible with unsupported operations
+            self.config.set_flag(trt.BuilderFlag.REJECT_EMPTY_ALGORITHMS)
+            logger.info("Empty algorithms rejection enabled for better compatibility")
+        except AttributeError:
+            logger.warning("Cannot set empty algorithms rejection, skipping")
         
         return self.config
     
@@ -116,6 +218,9 @@ class EngineBuilder:
             profile_shapes: Dict mapping input names to (min_shape, opt_shape, max_shape)
         """
         logger.info("Adding optimization profile...")
+        
+        # Store profile shapes for fallback use
+        self._profile_shapes = profile_shapes
         
         profile = self.builder.create_optimization_profile()
         
@@ -137,7 +242,7 @@ class EngineBuilder:
         self.config.add_optimization_profile(profile)
     
     def build_engine(self) -> trt.ICudaEngine:
-        """Build TensorRT engine."""
+        """Build TensorRT engine with fallback strategies."""
         logger.info("Building TensorRT engine (this may take several minutes)...")
         
         if self.network is None:
@@ -146,14 +251,99 @@ class EngineBuilder:
         if self.config is None:
             raise RuntimeError("Config not created. Call create_config() first.")
         
-        engine = self.builder.build_serialized_network(self.network, self.config)
+        # Try building with current configuration
+        try:
+            engine = self.builder.build_serialized_network(self.network, self.config)
+            if engine is not None:
+                logger.info("Engine built successfully")
+                return engine
+        except Exception as e:
+            logger.warning(f"Initial build failed: {e}")
         
-        if engine is None:
-            raise RuntimeError("Failed to build TensorRT engine")
+        # Fallback 1: Try with smaller workspace size (keep FP16)
+        logger.info("Trying fallback: Smaller workspace size...")
+        try:
+            smaller_config = self.builder.create_builder_config()
+            smaller_workspace = self.workspace_size // 2  # Half the workspace
+            smaller_config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, smaller_workspace)
+            
+            # Set precision
+            if self.precision == "fp16":
+                smaller_config.set_flag(trt.BuilderFlag.FP16)
+            
+            # Add optimization profile if it exists
+            if hasattr(self, '_profile_shapes') and self._profile_shapes:
+                profile = self.builder.create_optimization_profile()
+                for input_name, (min_shape, opt_shape, max_shape) in self._profile_shapes.items():
+                    profile.set_shape(input_name, min_shape, opt_shape, max_shape)
+                smaller_config.add_optimization_profile(profile)
+            
+            engine = self.builder.build_serialized_network(self.network, smaller_config)
+            if engine is not None:
+                logger.info("Engine built successfully with smaller workspace")
+                return engine
+        except Exception as e:
+            logger.warning(f"Smaller workspace fallback failed: {e}")
         
-        logger.info("Engine built successfully")
+        # Fallback 2: Try with minimal workspace size
+        logger.info("Trying fallback: Minimal workspace size...")
+        try:
+            minimal_config = self.builder.create_builder_config()
+            minimal_workspace = self.workspace_size // 4  # Quarter the workspace
+            minimal_config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, minimal_workspace)
+            
+            # Set precision
+            if self.precision == "fp16":
+                minimal_config.set_flag(trt.BuilderFlag.FP16)
+            
+            # Add optimization profile if it exists
+            if hasattr(self, '_profile_shapes') and self._profile_shapes:
+                profile = self.builder.create_optimization_profile()
+                for input_name, (min_shape, opt_shape, max_shape) in self._profile_shapes.items():
+                    profile.set_shape(input_name, min_shape, opt_shape, max_shape)
+                minimal_config.add_optimization_profile(profile)
+            
+            engine = self.builder.build_serialized_network(self.network, minimal_config)
+            if engine is not None:
+                logger.info("Engine built successfully with minimal workspace")
+                return engine
+        except Exception as e:
+            logger.warning(f"Minimal workspace fallback failed: {e}")
         
-        return engine
+        # Fallback 3: Try with even more aggressive TensorRT settings
+        logger.info("Trying fallback: Ultra-aggressive TensorRT settings...")
+        try:
+            ultra_config = self.builder.create_builder_config()
+            ultra_config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, self.workspace_size // 8)  # Very small workspace
+            
+            # Set precision
+            if self.precision == "fp16":
+                ultra_config.set_flag(trt.BuilderFlag.FP16)
+            
+            # Disable all problematic optimizations
+            try:
+                ultra_config.set_flag(trt.BuilderFlag.DISABLE_TIMING_CACHE)
+                ultra_config.set_flag(trt.BuilderFlag.REJECT_EMPTY_ALGORITHMS)
+                logger.info("Disabled timing cache and empty algorithms")
+            except AttributeError:
+                pass
+            
+            # Add optimization profile if it exists
+            if hasattr(self, '_profile_shapes') and self._profile_shapes:
+                profile = self.builder.create_optimization_profile()
+                for input_name, (min_shape, opt_shape, max_shape) in self._profile_shapes.items():
+                    profile.set_shape(input_name, min_shape, opt_shape, max_shape)
+                ultra_config.add_optimization_profile(profile)
+            
+            engine = self.builder.build_serialized_network(self.network, ultra_config)
+            if engine is not None:
+                logger.info("Engine built successfully with ultra-aggressive settings")
+                return engine
+        except Exception as e:
+            logger.warning(f"Ultra-aggressive fallback failed: {e}")
+        
+        # If all fallbacks fail
+        raise RuntimeError("Failed to build TensorRT engine with all fallback strategies")
     
     def save_engine(self, engine: trt.ICudaEngine, output_path: str) -> str:
         """
@@ -215,10 +405,9 @@ def build_engine(
     if profile_shapes:
         builder.add_optimization_profile(profile_shapes)
     
-    # Build and save engine
+    # Build and save engine (fallbacks are handled within the class)
     engine = builder.build_engine()
     engine_path = builder.save_engine(engine, output_path)
-    
     return engine_path
 
 

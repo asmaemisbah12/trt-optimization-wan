@@ -73,6 +73,10 @@ def export_to_onnx(
                 opset_version=opset_version,
                 do_constant_folding=do_constant_folding,
                 verbose=verbose,
+                # Additional options for better TensorRT compatibility
+                export_params=True,
+                keep_initializers_as_inputs=False,
+                training=torch.onnx.TrainingMode.EVAL,
             )
         
         logger.info(f"Successfully exported to {output_path}")
@@ -83,6 +87,12 @@ def export_to_onnx(
         return str(output_path)
         
     except Exception as e:
+        error_msg = str(e)
+        if "same reduction dim" in error_msg and "X" in error_msg:
+            logger.warning(f"Matrix dimension mismatch detected: {error_msg}")
+            logger.info("This suggests the dummy input dimensions don't match the model's expected input sizes.")
+            logger.info("Please check the detected dimensions and adjust the dummy input generation.")
+        
         logger.error(f"ONNX export failed: {e}")
         raise
 

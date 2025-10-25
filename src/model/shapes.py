@@ -1,7 +1,7 @@
 """Shape utilities and dummy input generation"""
 
 import torch
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -47,6 +47,81 @@ def get_latent_shapes(
     return shapes
 
 
+def detect_model_dimensions(model: torch.nn.Module) -> Dict[str, Any]:
+    """
+    Automatically detect model input dimensions by inspecting the model structure.
+    
+    Args:
+        model: PyTorch model to inspect
+        
+    Returns:
+        Dictionary with detected dimensions
+    """
+    detected_dims = {
+        "text_encoder_hidden_size": 2048,  # Default fallback
+        "text_encoder_seq_length": 256,    # Default fallback
+        "vae_latent_channels": 16,         # Default for AutoencoderKLWan
+        "vae_scale_factor": 16,            # Default for Wan2.2
+        "temporal_compression": 4,         # Default for Wan2.2
+    }
+    
+    try:
+        logger.info("Detecting model dimensions...")
+        
+        # Inspect model structure
+        for name, module in model.named_modules():
+            # Look for text encoder components
+            if hasattr(module, 'config') and hasattr(module.config, 'hidden_size'):
+                detected_dims["text_encoder_hidden_size"] = module.config.hidden_size
+                logger.info(f"Detected text encoder hidden_size: {module.config.hidden_size}")
+            
+            if hasattr(module, 'config') and hasattr(module.config, 'max_position_embeddings'):
+                detected_dims["text_encoder_seq_length"] = module.config.max_position_embeddings
+                logger.info(f"Detected text encoder seq_length: {module.config.max_position_embeddings}")
+            
+            # Look for VAE components
+            if hasattr(module, 'config') and hasattr(module.config, 'latent_channels'):
+                detected_dims["vae_latent_channels"] = module.config.latent_channels
+                logger.info(f"Detected VAE latent_channels: {module.config.latent_channels}")
+            
+            if hasattr(module, 'config') and hasattr(module.config, 'scaling_factor'):
+                detected_dims["vae_scale_factor"] = module.config.scaling_factor
+                logger.info(f"Detected VAE scale_factor: {module.config.scaling_factor}")
+            
+            # Look for temporal compression in VAE
+            if hasattr(module, 'config') and hasattr(module.config, 'temporal_compression'):
+                detected_dims["temporal_compression"] = module.config.temporal_compression
+                logger.info(f"Detected temporal_compression: {module.config.temporal_compression}")
+        
+        # Additional inspection for linear layers that might reveal hidden sizes
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.Linear):
+                # Look specifically for the text embedder linear_1 layer (not time embedder)
+                if "text_embedder" in name and "linear_1" in name:
+                    # Use the INPUT size (4096) as both hidden_size and seq_length
+                    # This ensures our dummy input will be [1, 4096, 4096] which matches what the model expects
+                    detected_dims["text_encoder_hidden_size"] = module.in_features
+                    detected_dims["text_encoder_seq_length"] = module.in_features
+                    logger.info(f"Detected text encoder dimensions from {name}: torch.Size([{module.in_features}, {module.out_features}])")
+                    logger.info(f"  Input size: {module.in_features}, Output size: {module.out_features}")
+                    logger.info(f"Using detected text encoder hidden size: {module.in_features}")
+                    logger.info(f"Using detected text encoder seq length: {module.in_features}")
+                    break
+                # Look for any linear layer with input size exactly 4096 (text embedder input size)
+                elif module.in_features == 4096 and "time_embedder" not in name:
+                    detected_dims["text_encoder_hidden_size"] = module.in_features
+                    logger.info(f"Detected text encoder hidden_size from {name}: {module.in_features}")
+                    break
+        
+        logger.info(f"Final detected dimensions: {detected_dims}")
+        
+    except Exception as e:
+        logger.warning(f"Failed to detect model dimensions: {e}")
+        logger.info("Using default dimensions")
+    
+    return detected_dims
+
+
 def create_dummy_inputs(
     component_name: str,
     batch_size: int = 1,
@@ -59,7 +134,8 @@ def create_dummy_inputs(
     vae_scale_factor: int = 16,  # 16×16 spatial compression
     temporal_compression: int = 4,  # 4× temporal compression
     device: str = "cuda",
-    dtype: torch.dtype = torch.bfloat16  # Wan2.2 uses bfloat16
+    dtype: torch.dtype = torch.bfloat16,  # Wan2.2 uses bfloat16
+    model: Optional[torch.nn.Module] = None  # Model for auto-detection
 ) -> Dict[str, torch.Tensor]:
     """
     Create dummy inputs for ONNX export and testing.
@@ -77,10 +153,28 @@ def create_dummy_inputs(
         temporal_compression: VAE temporal compression (4)
         device: Target device
         dtype: Data type for tensors (bfloat16 for Wan2.2)
+        model: Optional model for automatic dimension detection
         
     Returns:
         Dictionary of dummy input tensors
     """
+    # Auto-detect dimensions if model is provided
+    if model is not None:
+        detected_dims = detect_model_dimensions(model)
+        # Override with detected values if available
+        hidden_size = detected_dims.get("text_encoder_hidden_size", hidden_size)
+        seq_length = detected_dims.get("text_encoder_seq_length", seq_length)
+        latent_channels = detected_dims.get("vae_latent_channels", latent_channels)
+        vae_scale_factor = detected_dims.get("vae_scale_factor", vae_scale_factor)
+        temporal_compression = detected_dims.get("temporal_compression", temporal_compression)
+        
+        logger.info(f"Using auto-detected dimensions:")
+        logger.info(f"  hidden_size: {hidden_size}")
+        logger.info(f"  seq_length: {seq_length}")
+        logger.info(f"  latent_channels: {latent_channels}")
+        logger.info(f"  vae_scale_factor: {vae_scale_factor}")
+        logger.info(f"  temporal_compression: {temporal_compression}")
+    
     latent_height = height // vae_scale_factor
     latent_width = width // vae_scale_factor
     latent_frames = num_frames // temporal_compression

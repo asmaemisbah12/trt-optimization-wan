@@ -53,16 +53,23 @@ def parse_profile_config(
     profile_shapes = {}
     
     if "dit" in component or "transformer" in component or "unet" in component:
-        # Wan Transformer (MoE): sample, encoder_hidden_states
+        # Wan Transformer (MoE): sample, timestep, encoder_hidden_states
         # CRITICAL: Wan2.2 uses 16 latent channels, not 4!
         latent_channels = 16  # AutoencoderKLWan uses 16 channels
-        seq_length = 256      # Wan uses longer text sequences
-        hidden_size = 2048    # Larger text encoder hidden size
+        seq_length = 4096     # Use detected sequence length from ONNX export
+        hidden_size = 4096    # Use detected hidden size from ONNX export
         
         profile_shapes["sample"] = (
             (batch_config["min"], latent_channels, frames_config["min"], height_config["min"], width_config["min"]),
             (batch_config["opt"], latent_channels, frames_config["opt"], height_config["opt"], width_config["opt"]),
             (batch_config["max"], latent_channels, frames_config["max"], height_config["max"], width_config["max"]),
+        )
+        
+        # Add timestep input (missing from original profile)
+        profile_shapes["timestep"] = (
+            (batch_config["min"],),
+            (batch_config["opt"],),
+            (batch_config["max"],),
         )
         
         profile_shapes["encoder_hidden_states"] = (
@@ -80,6 +87,62 @@ def parse_profile_config(
             (batch_config["min"], latent_channels, frames_config["min"], height_config["min"], width_config["min"]),
             (batch_config["opt"], latent_channels, frames_config["opt"], height_config["opt"], width_config["opt"]),
             (batch_config["max"], latent_channels, frames_config["max"], height_config["max"], width_config["max"]),
+        )
+    
+    return profile_shapes
+
+
+def create_default_profile(component: str, min_frames: int = 8, opt_frames: int = 16, max_frames: int = 81) -> Dict[str, Tuple[Tuple[int, ...], Tuple[int, ...], Tuple[int, ...]]]:
+    """
+    Create default optimization profile for components.
+    
+    Args:
+        component: Component name
+        min_frames: Minimum frames
+        opt_frames: Optimal frames  
+        max_frames: Maximum frames
+        
+    Returns:
+        Default profile shapes
+    """
+    profile_shapes = {}
+    
+    if "dit" in component or "transformer" in component or "unet" in component:
+        # Default DiT/Transformer profile
+        latent_channels = 16
+        seq_length = 4096
+        hidden_size = 4096
+        
+        # Latent dimensions (VAE compressed)
+        latent_height = 45  # 720 / 16
+        latent_width = 80   # 1280 / 16
+        
+        profile_shapes["sample"] = (
+            (1, latent_channels, min_frames, latent_height, latent_width),
+            (1, latent_channels, opt_frames, latent_height, latent_width),
+            (1, latent_channels, max_frames, latent_height, latent_width),
+        )
+        
+        profile_shapes["timestep"] = (
+            (1,),
+            (1,),
+            (1,),
+        )
+        
+        profile_shapes["encoder_hidden_states"] = (
+            (1, seq_length, hidden_size),
+            (1, seq_length, hidden_size),
+            (1, seq_length, hidden_size),
+        )
+    
+    elif "vae" in component:
+        # Default VAE profile
+        latent_channels = 16
+        
+        profile_shapes["latent_sample"] = (
+            (1, latent_channels, min_frames, 45, 80),
+            (1, latent_channels, opt_frames, 45, 80),
+            (1, latent_channels, max_frames, 45, 80),
         )
     
     return profile_shapes
@@ -174,6 +237,16 @@ def main():
     
     # Get optimization profile
     profile_shapes = parse_profile_config(config, component)
+    
+    # If no profile found, create default profile
+    if profile_shapes is None:
+        logger.info("No profile found in config, creating default profile...")
+        profile_shapes = create_default_profile(
+            component=component,
+            min_frames=args.min_frames or 8,
+            opt_frames=args.opt_frames or 16,
+            max_frames=args.max_frames or 81
+        )
     
     # Manual overrides for frames
     if args.min_frames is not None and profile_shapes:

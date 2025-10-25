@@ -10,6 +10,7 @@ accelerate>=0.30.0
 onnx>=1.15.0
 onnxruntime-gpu>=1.16.0
 optimum[exporters]>=1.16.0
+onnxscript>=0.1.0
 
 # TensorRT (install separately via NVIDIA)
 # tensorrt>=8.6.0

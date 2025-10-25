@@ -138,7 +138,8 @@ def main():
         height=args.height,
         width=args.width,
         device="cuda:0",
-        dtype=dtype
+        dtype=dtype,
+        model=model  # Pass the loaded model for auto-detection
     )
     
     # Get dynamic axes
