@@ -34,7 +34,7 @@ def main():
         "--component",
         type=str,
         required=True,
-        choices=["dit", "transformer", "unet", "vae", "vae_encoder", "vae_decoder"],
+        choices=["dit", "transformer", "transformer_2", "unet", "vae", "vae_encoder", "vae_decoder"],
         help="Component to export"
     )
     parser.add_argument(
@@ -102,22 +102,43 @@ def main():
     
     # Load pipeline
     logger.info(f"Loading pipeline: {args.model_id}")
-    pipe = load_pipeline(
-        model_id=args.model_id,
-        cache_dir=config["model"].get("cache_dir"),
-        torch_dtype=args.precision,
-        vae_dtype="float32" if args.component in ["vae", "vae_decoder", "vae_encoder"] else args.precision,
-        device="cuda:0"
-    )
+    
+    # For VAE, load on CPU first to avoid memory issues
+    if args.component == "vae":
+        logger.info("Loading VAE on CPU first to avoid memory issues...")
+        pipe = load_pipeline(
+            model_id=args.model_id,
+            cache_dir=config["model"].get("cache_dir"),
+            torch_dtype=args.precision,
+            vae_dtype="float32",
+            device="cpu"  # Load on CPU first
+        )
+        
+        # Check if VAE has separate encoder/decoder components
+        if hasattr(pipe.vae, 'encoder') and hasattr(pipe.vae, 'decoder'):
+            logger.info("VAE has separate encoder/decoder components. Consider exporting them separately:")
+            logger.info("  python scripts/export_model.py --component vae_encoder --precision fp32")
+            logger.info("  python scripts/export_model.py --component vae_decoder --precision fp32")
+            logger.info("Continuing with full VAE export...")
+    else:
+        pipe = load_pipeline(
+            model_id=args.model_id,
+            cache_dir=config["model"].get("cache_dir"),
+            torch_dtype=args.precision,
+            vae_dtype="float32" if args.component in ["vae", "vae_decoder", "vae_encoder"] else args.precision,
+            device="cuda:0"
+        )
     
     # Get submodule
     component_map = {
         "dit": "transformer",
         "transformer": "transformer",
+        "transformer_2": "transformer_2",
         "unet": "unet",
+        "text_encoder": "text_encoder",
         "vae": "vae",
-        "vae_encoder": "vae",
-        "vae_decoder": "vae",
+        "vae_encoder": "vae",  # For compatibility, but use vae component
+        "vae_decoder": "vae",  # For compatibility, but use vae component
     }
     
     submodule_name = component_map.get(args.component)
@@ -129,6 +150,14 @@ def main():
     model = get_submodule(pipe, submodule_name)
     model.eval()
     
+    # For VAE components, move only the specific component to GPU to save memory
+    if args.component in ["vae", "vae_encoder", "vae_decoder"]:
+        logger.info(f"Moving {args.component} component to GPU...")
+        model = model.to("cuda:0")
+        device_for_inputs = "cuda:0"
+    else:
+        device_for_inputs = "cuda:0"
+    
     # Create dummy inputs
     logger.info("Creating dummy inputs...")
     dtype = get_torch_dtype(args.precision)
@@ -137,7 +166,7 @@ def main():
         num_frames=args.num_frames,
         height=args.height,
         width=args.width,
-        device="cuda:0",
+        device=device_for_inputs,
         dtype=dtype,
         model=model  # Pass the loaded model for auto-detection
     )
@@ -150,8 +179,14 @@ def main():
     output_path = output_dir / output_filename
     
     logger.info(f"Exporting to ONNX: {output_path}")
+    logger.info(f"Dynamic axes configuration: {dynamic_axes}")
     
     try:
+        # Use legacy export for VAE components to avoid torch.export compatibility issues
+        use_legacy_export = args.component in ["vae", "vae_encoder", "vae_decoder"]
+        if use_legacy_export:
+            logger.info("Using legacy ONNX export for VAE component...")
+        
         export_to_onnx(
             model=model,
             dummy_inputs=dummy_inputs,
@@ -161,7 +196,8 @@ def main():
             dynamic_axes=dynamic_axes,
             opset_version=args.opset_version,
             do_constant_folding=True,
-            verbose=False
+            verbose=False,
+            use_legacy_export=use_legacy_export
         )
         
         logger.info("✓ Export successful!")

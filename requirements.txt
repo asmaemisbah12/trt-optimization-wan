@@ -2,8 +2,8 @@
 # CRITICAL: torch>=2.4.0 required for native bfloat16 support (Wan2.2)
 torch>=2.4.0
 torchvision>=0.19.0
-diffusers>=0.30.0  # Required for WanPipeline and AutoencoderKLWan
-transformers>=4.40.0
+diffusers==0.35.0  # Required for WanPipeline and AutoencoderKLWan
+transformers==4.48.0
 accelerate>=0.30.0
 
 # ONNX and Optimization

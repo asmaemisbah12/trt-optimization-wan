@@ -19,7 +19,8 @@ def export_to_onnx(
     dynamic_axes: Optional[Dict[str, Dict[int, str]]] = None,
     opset_version: int = 17,
     do_constant_folding: bool = True,
-    verbose: bool = False
+    verbose: bool = False,
+    use_legacy_export: bool = False
 ) -> str:
     """
     Export PyTorch model to ONNX format.
@@ -63,21 +64,80 @@ def export_to_onnx(
     
     try:
         with torch.no_grad():
-            torch.onnx.export(
-                model,
-                input_tuple,
-                str(output_path),
-                input_names=input_names,
-                output_names=output_names,
-                dynamic_axes=dynamic_axes,
-                opset_version=opset_version,
-                do_constant_folding=do_constant_folding,
-                verbose=verbose,
-                # Additional options for better TensorRT compatibility
-                export_params=True,
-                keep_initializers_as_inputs=False,
-                training=torch.onnx.TrainingMode.EVAL,
-            )
+            # Use legacy export for VAE to avoid torch.export issues
+            if use_legacy_export:
+                logger.info("Using legacy ONNX export method...")
+                # Force use of old tracing method by setting environment variable
+                import os
+                old_env = os.environ.get('TORCH_ONNX_EXPERIMENTAL_RUNTIME', None)
+                os.environ['TORCH_ONNX_EXPERIMENTAL_RUNTIME'] = '0'
+                
+                # Disable dynamo to avoid dynamic_axes conflicts
+                old_dynamo_env = os.environ.get('TORCH_COMPILE_DISABLE', None)
+                os.environ['TORCH_COMPILE_DISABLE'] = '1'
+                
+                try:
+                    # For VAE, use simplified dynamic axes to avoid dynamo conflicts
+                    vae_dynamic_axes = {
+                        "sample": {0: "batch", 1: "frames", 3: "height", 4: "width"},
+                    } if "sample" in input_names else {
+                        "latent_sample": {0: "batch", 1: "channels", 2: "frames", 3: "height", 4: "width"},
+                    }
+                    
+                    # Additional environment variables to force legacy behavior
+                    old_torch_onnx_env = os.environ.get('TORCH_ONNX_DISABLE_DYNAMO', None)
+                    os.environ['TORCH_ONNX_DISABLE_DYNAMO'] = '1'
+                    
+                    try:
+                        torch.onnx.export(
+                            model,
+                            input_tuple,
+                            str(output_path),
+                            input_names=input_names,
+                            output_names=output_names,
+                            dynamic_axes=vae_dynamic_axes,
+                            opset_version=opset_version,
+                            do_constant_folding=do_constant_folding,
+                            verbose=verbose,
+                            export_params=True,
+                            keep_initializers_as_inputs=False,
+                            training=torch.onnx.TrainingMode.EVAL,
+                            # Additional options to force legacy tracing
+                            operator_export_type=torch.onnx.OperatorExportTypes.ONNX,
+                        )
+                    finally:
+                        # Restore torch.onnx environment
+                        if old_torch_onnx_env is not None:
+                            os.environ['TORCH_ONNX_DISABLE_DYNAMO'] = old_torch_onnx_env
+                        else:
+                            os.environ.pop('TORCH_ONNX_DISABLE_DYNAMO', None)
+                finally:
+                    # Restore original environment
+                    if old_env is not None:
+                        os.environ['TORCH_ONNX_EXPERIMENTAL_RUNTIME'] = old_env
+                    else:
+                        os.environ.pop('TORCH_ONNX_EXPERIMENTAL_RUNTIME', None)
+                    
+                    if old_dynamo_env is not None:
+                        os.environ['TORCH_COMPILE_DISABLE'] = old_dynamo_env
+                    else:
+                        os.environ.pop('TORCH_COMPILE_DISABLE', None)
+            else:
+                torch.onnx.export(
+                    model,
+                    input_tuple,
+                    str(output_path),
+                    input_names=input_names,
+                    output_names=output_names,
+                    dynamic_axes=dynamic_axes,
+                    opset_version=opset_version,
+                    do_constant_folding=do_constant_folding,
+                    verbose=verbose,
+                    # Additional options for better TensorRT compatibility
+                    export_params=True,
+                    keep_initializers_as_inputs=False,
+                    training=torch.onnx.TrainingMode.EVAL,
+                )
         
         logger.info(f"Successfully exported to {output_path}")
         
@@ -88,12 +148,30 @@ def export_to_onnx(
         
     except Exception as e:
         error_msg = str(e)
+        
+        # Enhanced error handling for common WAN2.2 issues
         if "same reduction dim" in error_msg and "X" in error_msg:
             logger.warning(f"Matrix dimension mismatch detected: {error_msg}")
             logger.info("This suggests the dummy input dimensions don't match the model's expected input sizes.")
-            logger.info("Please check the detected dimensions and adjust the dummy input generation.")
+            logger.info("Common fixes:")
+            logger.info("  1. Check if text encoder hidden_size matches the model (should be 4096 for WAN2.2)")
+            logger.info("  2. Verify sequence length matches text encoder max_position_embeddings")
+            logger.info("  3. Ensure latent channels = 16 for AutoencoderKLWan")
+            logger.info("  4. Check VAE scale factor = 16 and temporal compression = 4")
         
-        logger.error(f"ONNX export failed: {e}")
+        elif "Expected input" in error_msg and "got" in error_msg:
+            logger.warning(f"Input shape mismatch: {error_msg}")
+            logger.info("The model expects different input shapes than provided.")
+            logger.info("Try running with --validate to see actual vs expected shapes.")
+        
+        elif "timestep" in error_msg.lower():
+            logger.warning(f"Timestep-related error: {error_msg}")
+            logger.info("Ensure timestep is dynamic and uses float32 dtype.")
+            logger.info("Timestep should be [batch_size] not [1] to handle batch > 1.")
+        
+        else:
+            logger.error(f"ONNX export failed: {e}")
+        
         raise
 
 
@@ -247,16 +325,23 @@ def compare_onnx_outputs(
             input_tuple = tuple(dummy_inputs[name] for name in input_names)
             torch_output = model(*input_tuple)
             
+            # Handle tuple outputs from WAN2.2 models
             if isinstance(torch_output, tuple):
+                # For WAN2.2, typically the first output is the main latents
                 torch_output = torch_output[0]
+                logger.debug(f"Model returned tuple output, using first element: {torch_output.shape}")
             
-            torch_output_np = torch_output.cpu().numpy()
+            # Cast to float32 to avoid dtype mismatch issues with BF16/FP16
+            torch_output_np = torch_output.float().cpu().numpy()
         
         # Get ONNX output
         sess = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
         onnx_inputs = {name: dummy_inputs[name].cpu().numpy() for name in input_names}
         onnx_outputs = sess.run(None, onnx_inputs)
-        onnx_output_np = onnx_outputs[0]
+        
+        # Handle tuple outputs and ensure float32 for comparison
+        onnx_output_np = onnx_outputs[0].astype(np.float32)
+        logger.debug(f"ONNX output shape: {onnx_output_np.shape}, dtype: {onnx_output_np.dtype}")
         
         # Compare
         max_diff = np.max(np.abs(torch_output_np - onnx_output_np))
