@@ -11,8 +11,8 @@ def get_latent_shapes(
     num_frames: int,
     height: int,
     width: int,
-    vae_scale_factor: int = 16,  # Wan2.2 VAE uses 16×16 spatial compression
-    temporal_compression: int = 4,  # Wan2.2 VAE uses 4× temporal compression
+    vae_scale_factor: int = 8,  # WAN 2.2 uses 8× spatial compression (spatial_scale = 8)
+    temporal_compression: int = 4,  # WAN 2.2 uses 4× temporal compression (temporal_scale = 4)
     latent_channels: int = 16  # AutoencoderKLWan uses 16 channels (not 4)
 ) -> Dict[str, Tuple[int, ...]]:
     """
@@ -22,8 +22,8 @@ def get_latent_shapes(
         num_frames: Number of video frames
         height: Video height in pixels
         width: Video width in pixels
-        vae_scale_factor: VAE spatial downsampling factor (16 for Wan2.2)
-        temporal_compression: VAE temporal compression factor (4 for Wan2.2)
+        vae_scale_factor: VAE spatial downsampling factor (8 for WAN 2.2, spatial_scale = 8)
+        temporal_compression: VAE temporal compression factor (4 for WAN 2.2, temporal_scale = 4)
         latent_channels: Number of latent channels (16 for AutoencoderKLWan)
         
     Returns:
@@ -61,8 +61,8 @@ def detect_model_dimensions(model: torch.nn.Module) -> Dict[str, Any]:
         "text_encoder_hidden_size": 4096,  # WAN2.2 uses 4096 (UMT5EncoderModel)
         "text_encoder_seq_length": 1024,   # WAN2.2 supports long prompts
         "vae_latent_channels": 16,         # Default for AutoencoderKLWan
-        "vae_scale_factor": 16,            # Default for Wan2.2
-        "temporal_compression": 4,         # Default for Wan2.2
+        "vae_scale_factor": 8,             # Default for WAN 2.2 (spatial_scale = 8)
+        "temporal_compression": 4,         # Default for WAN 2.2 (temporal_scale = 4)
     }
     
     try:
@@ -131,8 +131,8 @@ def create_dummy_inputs(
     latent_channels: int = 16,  # AutoencoderKLWan uses 16 channels
     seq_length: int = 1024,  # WAN2.2 supports long prompts
     hidden_size: int = 4096,  # WAN2.2 uses 4096 (UMT5EncoderModel)
-    vae_scale_factor: int = 16,  # 16×16 spatial compression
-    temporal_compression: int = 4,  # 4× temporal compression
+    vae_scale_factor: int = 8,  # WAN 2.2 uses 8× spatial compression (spatial_scale = 8)
+    temporal_compression: int = 4,  # WAN 2.2 uses 4× temporal compression (temporal_scale = 4)
     device: str = "cuda",
     dtype: torch.dtype = torch.float16,  # Pure FP16 for ONNX/TensorRT optimization
     model: Optional[torch.nn.Module] = None  # Model for auto-detection
@@ -149,8 +149,8 @@ def create_dummy_inputs(
         latent_channels: Number of latent channels (16 for AutoencoderKLWan)
         seq_length: Text encoder sequence length
         hidden_size: Text encoder hidden size
-        vae_scale_factor: VAE spatial downsampling factor (16)
-        temporal_compression: VAE temporal compression (4)
+        vae_scale_factor: VAE spatial downsampling factor (8 for WAN 2.2, spatial_scale = 8)
+        temporal_compression: VAE temporal compression (4 for WAN 2.2, temporal_scale = 4)
         device: Target device
         dtype: Data type for tensors (bfloat16 for Wan2.2)
         model: Optional model for automatic dimension detection
@@ -215,10 +215,10 @@ def create_dummy_inputs(
         assert inputs["sample"].shape[1] == 16, f"Latent channel mismatch: WAN2.2 requires 16, got {inputs['sample'].shape[1]}"
         logger.info(f"✓ Latent channels validation passed: {inputs['sample'].shape[1]} channels")
         
-        # Validate spatial dimensions are divisible by 16 (VAE scale factor)
+        # Validate spatial dimensions are divisible by 8 (VAE spatial_scale = 8)
         latent_h, latent_w = inputs["sample"].shape[3], inputs["sample"].shape[4]
-        assert latent_h % 16 == 0, f"Latent height must be divisible by 16, got {latent_h}"
-        assert latent_w % 16 == 0, f"Latent width must be divisible by 16, got {latent_w}"
+        assert latent_h % 8 == 0, f"Latent height must be divisible by 8, got {latent_h}"
+        assert latent_w % 8 == 0, f"Latent width must be divisible by 8, got {latent_w}"
         logger.info(f"✓ Spatial dimensions validation passed: {latent_h}×{latent_w}")
         
         # Validate temporal dimension is divisible by 4 (temporal compression)
@@ -377,8 +377,9 @@ def get_optimized_dummy_inputs(
         Dictionary of dummy input tensors optimized for TensorRT
     """
     # Validate input dimensions for TensorRT compatibility
-    assert height % 16 == 0, f"Height must be divisible by 16, got {height}"
-    assert width % 16 == 0, f"Width must be divisible by 16, got {width}"
+    # WAN 2.2 uses spatial_scale = 8, so height/width should be divisible by 8
+    assert height % 8 == 0, f"Height must be divisible by 8, got {height}"
+    assert width % 8 == 0, f"Width must be divisible by 8, got {width}"
     assert num_frames % 4 == 0, f"Frames must be divisible by 4, got {num_frames}"
     
     # Get TensorRT shape ranges

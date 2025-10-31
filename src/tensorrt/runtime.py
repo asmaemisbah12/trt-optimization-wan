@@ -33,7 +33,14 @@ class TRTInference:
         self.enable_cuda_graph = enable_cuda_graph
         
         # Create execution context
-        self.context = engine.create_execution_context()
+        try:
+            self.context = engine.create_execution_context()
+            if self.context is None:
+                raise RuntimeError("Failed to create execution context - engine.create_execution_context() returned None")
+        except Exception as e:
+            logger.error(f"Failed to create execution context: {e}")
+            self.context = None
+            raise
         
         # Binding information
         self.input_names = []
